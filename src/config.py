@@ -1,8 +1,22 @@
 import os
 import sys
 
+import httpx
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
+
+_STEALTH_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/136.0.0.0 Safari/537.36"
+)
+
+
+async def _strip_sdk_fingerprint(request: httpx.Request) -> None:
+    stale = [k for k in request.headers if k.lower().startswith("x-stainless")]
+    for k in stale:
+        del request.headers[k]
+    request.headers["user-agent"] = _STEALTH_UA
 
 # --- AI & Notification Configuration ---
 load_dotenv()
@@ -69,8 +83,11 @@ else:
             os.environ['HTTP_PROXY'] = PROXY_URL
             os.environ['HTTPS_PROXY'] = PROXY_URL
 
-        # openai 客户端内部的 httpx 会自动从环境变量中获取代理配置
-        client = AsyncOpenAI(api_key=API_KEY, base_url=BASE_URL)
+        _http_client = httpx.AsyncClient(
+            proxy=PROXY_URL if PROXY_URL else None,
+            event_hooks={"request": [_strip_sdk_fingerprint]},
+        )
+        client = AsyncOpenAI(api_key=API_KEY, base_url=BASE_URL, http_client=_http_client)
     except Exception as e:
         print(f"初始化 OpenAI 客户端时出错: {e}")
         client = None

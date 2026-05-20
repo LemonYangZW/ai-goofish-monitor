@@ -135,12 +135,23 @@ async def create_ai_response_async(
     client: Any,
     api_mode: str,
     request_params: Dict[str, Any],
-) -> Any:
-    """根据 API 模式发起异步请求。"""
-    if api_mode == RESPONSES_API_MODE:
-        return await client.responses.create(**request_params)
+) -> str:
+    """根据 API 模式发起异步流式请求，聚合后返回完整文本。"""
     if api_mode == CHAT_COMPLETIONS_API_MODE:
-        return await client.chat.completions.create(**request_params)
+        params = {**request_params, "stream": True}
+        parts: List[str] = []
+        stream = await client.chat.completions.create(**params)
+        async for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                parts.append(chunk.choices[0].delta.content)
+        return "".join(parts)
+    if api_mode == RESPONSES_API_MODE:
+        params = {**request_params, "stream": True}
+        parts = []
+        async for event in await client.responses.create(**params):
+            if getattr(event, "type", None) == "response.output_text.delta":
+                parts.append(event.delta)
+        return "".join(parts)
     raise ValueError(f"不支持的 AI API 模式: {api_mode}")
 
 

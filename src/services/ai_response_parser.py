@@ -36,13 +36,35 @@ def extract_ai_response_content(response: Any) -> str:
     raise ValueError(f"无法识别的AI响应类型: {type(response).__name__}")
 
 
+_DEFAULT_PROMPT_VERSION = "EagleEye-V6.4"
+
+
 def parse_ai_response_json(content: str) -> dict:
     """解析 AI 文本响应中的 JSON。"""
     cleaned = _strip_code_fences(content)
     try:
-        return json.loads(cleaned)
+        result = json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        return _extract_first_json_value(cleaned, exc)
+        result = _extract_first_json_value(cleaned, exc)
+    if isinstance(result, dict):
+        _normalize_ai_result(result)
+    return result
+
+
+def _normalize_ai_result(result: dict) -> None:
+    """归一化 AI 响应中已知的类型漂移字段，避免因格式问题触发无效重试。"""
+    if "prompt_version" not in result:
+        result["prompt_version"] = _DEFAULT_PROMPT_VERSION
+
+    is_rec = result.get("is_recommended")
+    if isinstance(is_rec, str):
+        result["is_recommended"] = is_rec.strip().lower() == "true"
+
+    risk_tags = result.get("risk_tags")
+    if risk_tags is None:
+        result["risk_tags"] = []
+    elif isinstance(risk_tags, str):
+        result["risk_tags"] = [risk_tags] if risk_tags.strip() else []
 
 
 def _coerce_content_parts(content: Any) -> str:

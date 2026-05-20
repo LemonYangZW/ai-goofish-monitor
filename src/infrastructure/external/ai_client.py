@@ -9,7 +9,8 @@ import base64
 from typing import Dict, List, Optional
 from datetime import datetime
 from dotenv import load_dotenv
-from openai import AsyncOpenAI
+import httpx
+from openai import AsyncOpenAI, APIStatusError
 from src.ai_message_builder import (
     build_analysis_text_prompt,
     build_user_message_content,
@@ -32,6 +33,28 @@ from src.services.ai_response_parser import (
     extract_ai_response_content,
     parse_ai_response_json,
 )
+
+
+_TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
+_STEALTH_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/136.0.0.0 Safari/537.36"
+)
+
+
+async def _strip_sdk_fingerprint(request: httpx.Request) -> None:
+    """事件钩子：剥除 openai SDK 注入的 x-stainless-* 特征头并替换 User-Agent。"""
+    stale = [k for k in request.headers if k.lower().startswith("x-stainless")]
+    for k in stale:
+        del request.headers[k]
+    request.headers["user-agent"] = _STEALTH_UA
+
+
+def _is_transient_error(exc: Exception) -> bool:
+    if isinstance(exc, APIStatusError):
+        return exc.status_code in _TRANSIENT_STATUS_CODES
+    return False
 
 
 def _sanitize_no_proxy_env() -> None:
@@ -96,9 +119,14 @@ class AIClient:
 
             _sanitize_no_proxy_env()
 
+            _http_client = httpx.AsyncClient(
+                proxy=self.settings.proxy_url if self.settings.proxy_url else None,
+                event_hooks={"request": [_strip_sdk_fingerprint]},
+            )
             return AsyncOpenAI(
                 api_key=self.settings.api_key,
-                base_url=self.settings.base_url
+                base_url=self.settings.base_url,
+                http_client=_http_client,
             )
         except Exception as e:
             print(f"初始化 AI 客户端失败: {e}")
@@ -184,6 +212,7 @@ class AIClient:
         *,
         temperature: float = 0.1,
         max_output_tokens: int = 4000,
+        thinking_budget: Optional[int] = None,
         enable_json_output: Optional[bool] = None,
     ) -> str:
         """调用 AI API"""
@@ -208,7 +237,9 @@ class AIClient:
             if not use_temperature:
                 request_params = remove_temperature_param(request_params)
 
-            if self.settings.enable_thinking:
+            if thinking_budget is not None:
+                request_params["extra_body"] = {"enable_thinking": True, "thinking_budget": thinking_budget}
+            elif self.settings.enable_thinking:
                 request_params["extra_body"] = {"enable_thinking": False}
 
             try:
@@ -249,7 +280,10 @@ class AIClient:
                     use_temperature = False
                     changed = True
                     print("当前模型不支持 temperature 参数，正在自动重试并移除该参数")
-                if changed and attempt < max_attempts - 1:
+                is_transient = _is_transient_error(exc)
+                if (changed or is_transient) and attempt < max_attempts - 1:
+                    if is_transient:
+                        print(f"遇到临时性错误，正在自动重试 ({attempt + 2}/{max_attempts}): {exc}")
                     continue
                 raise
 

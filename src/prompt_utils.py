@@ -30,7 +30,7 @@ META_PROMPT_TEMPLATE = """
 1.  **只输出新生成的文本内容**，不要包含任何额外的解释、标题或代码块标记。
 2.  保留范例中的 `[V6.3 核心升级]`、`[V6.4 逻辑修正]` 等版本标记，这有助于保持格式一致性。
 3.  将范例中所有与 "MacBook" 相关的内容，替换为与用户需求商品相关的内容。
-4.  思考并生成针对新商品类型的“一票否决硬性原则”和“危险信号清单”。
+4.  思考并生成针对新商品类型的"一票否决硬性原则"和"危险信号清单"。
 """
 
 ProgressCallback = Callable[[str, str], Awaitable[None]]
@@ -61,7 +61,8 @@ async def _request_generated_text(ai_client: AIClient, prompt: str) -> str:
         generated_text = await ai_client._call_ai(
             [{"role": "user", "content": prompt}],
             temperature=0.5,
-            max_output_tokens=800,
+            max_output_tokens=8192,
+            thinking_budget=8192,
             enable_json_output=False,
         )
     except Exception as exc:

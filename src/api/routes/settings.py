@@ -15,15 +15,6 @@ from src.infrastructure.config.settings import (
     reload_settings,
     scraper_settings,
 )
-from src.services.ai_request_compat import (
-    CHAT_COMPLETIONS_API_MODE,
-    RESPONSES_API_MODE,
-    build_ai_request_params,
-    create_ai_response_sync,
-    is_chat_completions_api_unsupported_error,
-    is_responses_api_unsupported_error,
-)
-from src.services.ai_response_parser import extract_ai_response_content
 from src.services.notification_config_service import (
     NotificationSettingsValidationError,
     build_configured_channels,
@@ -283,62 +274,64 @@ async def update_ai_settings(settings: AISettingsModel):
     return {"message": "AI设置已成功更新"}
 
 
+_BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
+}
+
+
+def _build_chat_completions_url(base_url: str) -> str:
+    base = base_url.rstrip("/")
+    if base.endswith("/v1"):
+        return f"{base}/chat/completions"
+    return f"{base}/v1/chat/completions"
+
+
 @router.post("/ai/test")
 async def test_ai_settings(settings: dict):
     """测试AI模型设置是否有效"""
+    import httpx
+
+    stored_api_key = env_manager.get_value("OPENAI_API_KEY", "")
+    submitted_api_key = settings.get("OPENAI_API_KEY", "")
+    api_key = submitted_api_key or stored_api_key
+    base_url = (settings.get("OPENAI_BASE_URL", "") or "").rstrip("/")
+    model_name = settings.get("OPENAI_MODEL_NAME", "")
+    proxy_url = settings.get("PROXY_URL", "")
+
+    url = _build_chat_completions_url(base_url)
+    headers = {
+        **_BROWSER_HEADERS,
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": model_name,
+        "messages": [{"role": "user", "content": AI_TEST_PROMPT}],
+        "max_tokens": AI_TEST_MAX_OUTPUT_TOKENS,
+    }
+
     try:
-        from openai import OpenAI
-        import httpx
+        async with httpx.AsyncClient(
+            proxy=proxy_url if proxy_url else None,
+            timeout=httpx.Timeout(30.0),
+        ) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
 
-        stored_api_key = env_manager.get_value("OPENAI_API_KEY", "")
-        submitted_api_key = settings.get("OPENAI_API_KEY", "")
-        api_key = submitted_api_key or stored_api_key
-
-        client_params = {
-            "api_key": api_key,
-            "base_url": settings.get("OPENAI_BASE_URL", ""),
-            "timeout": httpx.Timeout(30.0),
-        }
-
-        proxy_url = settings.get("PROXY_URL", "")
-        if proxy_url:
-            client_params["http_client"] = httpx.Client(proxy=proxy_url)
-
-        model_name = settings.get("OPENAI_MODEL_NAME", "")
-        client = OpenAI(**client_params)
-        messages = [{"role": "user", "content": AI_TEST_PROMPT}]
-        api_mode = CHAT_COMPLETIONS_API_MODE
-
-        try:
-            response = create_ai_response_sync(
-                client,
-                api_mode,
-                build_ai_request_params(
-                    api_mode,
-                    model=model_name,
-                    messages=messages,
-                    max_output_tokens=AI_TEST_MAX_OUTPUT_TOKENS,
-                ),
-            )
-        except Exception as exc:
-            if not is_chat_completions_api_unsupported_error(exc):
-                raise
-            api_mode = RESPONSES_API_MODE
-            response = create_ai_response_sync(
-                client,
-                api_mode,
-                build_ai_request_params(
-                    api_mode,
-                    model=model_name,
-                    messages=messages,
-                    max_output_tokens=AI_TEST_MAX_OUTPUT_TOKENS,
-                ),
-            )
-
+        choices = data.get("choices") or []
+        if not choices:
+            raise ValueError("AI 返回了空响应")
+        content = ((choices[0].get("message") or {}).get("content") or "").strip()
         return {
             "success": True,
             "message": "AI模型连接测试成功！",
-            "response": extract_ai_response_content(response),
+            "response": content,
         }
     except Exception as exc:
         return {

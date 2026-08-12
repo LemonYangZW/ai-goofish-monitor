@@ -1,11 +1,17 @@
 services:
   app:
+    # 默认使用发布镜像；本地构建时用 APP_IMAGE 指定本地 tag，
+    # 并将 APP_PULL_POLICY 设为 never，避免 compose 去远端拉取不存在的镜像
     image: ${APP_IMAGE:-ghcr.io/usagi-org/ai-goofish:latest}
+    build:
+      context: .
     container_name: ai-goofish-monitor-app
-    pull_policy: always
-    init: true
+    pull_policy: ${APP_PULL_POLICY:-always}
+    # 不使用 compose 的 init：镜像 ENTRYPOINT 已是 tini，
+    # 再注入一层会把 tini 挤出 PID 1，导致爬虫子进程的僵尸回收失效
     ports:
-      - "8000:8000"
+      # 宿主端口可通过 APP_PORT 调整，容器内始终监听 8000
+      - "${APP_PORT:-8000}:8000"
     env_file:
       - .env
     environment:

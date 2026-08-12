@@ -76,11 +76,21 @@ docker compose logs -f app
 
 > [!IMPORTANT]
 > The default image in `docker-compose.yaml` is still the upstream archived build `ghcr.io/usagi-org/ai-goofish:latest`, which **does not include the fixes from this repository**.
-> Once this repository publishes its own image, switch with an environment variable:
+> Until this repository publishes its own image, build from source:
 >
 > ```bash
-> APP_IMAGE=ghcr.io/lemonyangzw/ai-goofish:latest docker compose up -d
+> APP_IMAGE=ai-goofish:local APP_PULL_POLICY=never docker compose up -d --build
 > ```
+>
+> Once the image is published: `APP_IMAGE=ghcr.io/lemonyangzw/ai-goofish:latest docker compose up -d`
+
+Supported environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `APP_IMAGE` | `ghcr.io/usagi-org/ai-goofish:latest` | Image reference; point to a custom tag when building locally |
+| `APP_PULL_POLICY` | `always` | Must be `never` when using a locally built image, otherwise compose tries to pull from the registry |
+| `APP_PORT` | `8000` | Host port; the container always listens on 8000 |
 
 <details>
 <summary>Mirror acceleration for slow pulls</summary>

@@ -75,11 +75,21 @@ docker compose logs -f app
 
 > [!IMPORTANT]
 > `docker-compose.yaml` 默认镜像仍为上游归档版本 `ghcr.io/usagi-org/ai-goofish:latest`，**不包含本仓库的修复**。
-> 本仓库镜像发布后，可通过环境变量切换：
+> 在本仓库镜像发布前，请从源码构建：
 >
 > ```bash
-> APP_IMAGE=ghcr.io/lemonyangzw/ai-goofish:latest docker compose up -d
+> APP_IMAGE=ai-goofish:local APP_PULL_POLICY=never docker compose up -d --build
 > ```
+>
+> 镜像发布后可直接切换：`APP_IMAGE=ghcr.io/lemonyangzw/ai-goofish:latest docker compose up -d`
+
+支持的环境变量：
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `APP_IMAGE` | `ghcr.io/usagi-org/ai-goofish:latest` | 镜像地址，本地构建时指向自定义 tag |
+| `APP_PULL_POLICY` | `always` | 使用本地构建的镜像时须设为 `never`，否则 compose 会去远端拉取 |
+| `APP_PORT` | `8000` | 宿主机端口，容器内始终监听 8000 |
 
 <details>
 <summary>镜像拉取缓慢时的加速方案</summary>

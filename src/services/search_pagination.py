@@ -11,7 +11,7 @@ NEXT_PAGE_SELECTOR = (
     ":has([class*='search-pagination-arrow-right'])"
     ":not([disabled])"
 )
-SEARCH_RESULTS_API_FRAGMENT = "/h5/mtop.taobao.idlemtopsearch.pc.search/1.0/"
+SEARCH_RESULTS_API_FRAGMENT = "mtop.taobao.idlemtopsearch.pc.search"
 PAGE_REQUEST_TIMEOUT_MS = 20_000
 PAGE_CLICK_TIMEOUT_MS = 10_000
 PAGE_RETRY_DELAY_SECONDS = 5
@@ -34,7 +34,11 @@ def is_search_results_response(
     request = getattr(response, "request", None)
     request_method = getattr(request, "method", None)
     response_url = getattr(response, "url", "")
-    return api_url_fragment in response_url and request_method == "POST"
+    return (
+        api_url_fragment in response_url
+        and f"{api_url_fragment}.shade" not in response_url
+        and request_method == "POST"
+    )
 
 
 async def advance_search_page(

@@ -201,6 +201,15 @@ def test_is_search_results_response_matches_exact_search_api() -> None:
     assert is_search_results_response(response) is True
 
 
+def test_is_search_results_response_accepts_changed_api_version() -> None:
+    response = FakeResponse(
+        url="https://h5api.m.goofish.com/h5/mtop.taobao.idlemtopsearch.pc.search/2.0/?foo=bar",
+        method="POST",
+    )
+
+    assert is_search_results_response(response) is True
+
+
 def test_is_search_results_response_rejects_search_shade_api() -> None:
     response = FakeResponse(
         url="https://h5api.m.goofish.com/h5/mtop.taobao.idlemtopsearch.pc.search.shade/1.0/?foo=bar",

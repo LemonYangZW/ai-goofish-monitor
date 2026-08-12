@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -119,10 +120,19 @@ def _ensure_parent_dir(path: str) -> None:
 def _read_json_file(path: str) -> dict:
     try:
         with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
+            raw = f.read()
     except FileNotFoundError:
         return {}
+    except OSError:
+        return {}
+
+    # 空文件是尚未写入的初始状态，不是损坏，不能触发 .corrupt 转存。
+    if not raw.strip():
+        return {}
+
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
     except Exception:
         # 文件损坏时保留现场，避免无限解析失败。
         try:
@@ -140,7 +150,27 @@ def _atomic_write_json(path: str, data: dict) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, path)
+    try:
+        os.replace(tmp, path)
+    except OSError:
+        if sys.platform != "win32":
+            raise
+        # Windows: os.replace fails with WinError 5 when target is locked by another process.
+        # Retry after briefly removing the target file.
+        for _attempt in range(3):
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+                os.rename(tmp, path)
+                break
+            except OSError:
+                time.sleep(0.05)
+        else:
+            # Last resort: swallow the error to avoid crashing the spider
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 @dataclass(frozen=True)
@@ -188,9 +218,11 @@ class FailureGuard:
 
     def _update_task(self, task_key: str, updater) -> dict:
         _ensure_parent_dir(self.path)
-        with open(self.path, "a+", encoding="utf-8") as fh:
+        # 锁加在独立的 .lock 文件上，不能锁状态文件本身：
+        # Windows 下若持有状态文件句柄，_atomic_write_json 的 os.replace/os.remove 会失败，
+        # 导致整次写入被静默丢弃，失败计数永远无法累积。
+        with open(f"{self.path}.lock", "a+", encoding="utf-8") as fh:
             with _FileLock(fh):
-                fh.seek(0)
                 data = self._load()
                 tasks = data.setdefault("tasks", {})
                 entry = tasks.get(task_key) or {}

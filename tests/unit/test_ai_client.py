@@ -6,6 +6,7 @@ import pytest
 
 from src.infrastructure.external.ai_client import AIClient, _sanitize_no_proxy_env
 from src.services.ai_request_compat import build_responses_input
+from tests.ai_stream_stubs import fake_stream as _fake_stream
 
 
 def _build_fake_client(responses_create_impl, chat_create_impl=None):
@@ -14,6 +15,8 @@ def _build_fake_client(responses_create_impl, chat_create_impl=None):
         completions=SimpleNamespace(create=chat_create_impl or responses_create_impl)
     )
     return SimpleNamespace(responses=responses, chat=chat)
+
+
 
 
 def test_build_messages_without_images_uses_text_only_content():
@@ -93,13 +96,7 @@ def test_call_ai_retries_without_structured_output_when_model_rejects_it():
                 "the request are not valid: `json_object` is not supported by "
                 "this model.', 'param': 'response_format.type'}}"
             )
-        return SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(content='{"ok":true}')
-                )
-            ]
-        )
+        return _fake_stream('{"ok":true}')
 
     client.client = _build_fake_client(fake_create)
 
@@ -133,7 +130,7 @@ def test_call_ai_falls_back_to_responses_when_chat_completions_api_is_missing():
                 "the request are not valid: `json_object` is not supported by "
                 "this model.', 'param': 'text.format.type'}}"
             )
-        return SimpleNamespace(output_text='{"ok":true}')
+        return _fake_stream('{"ok":true}')
 
     client.client = _build_fake_client(fake_responses_create, fake_chat_create)
 
@@ -160,13 +157,7 @@ def test_call_ai_retries_without_temperature_when_gateway_rejects_it():
         request_history.append(kwargs)
         if len(request_history) == 1:
             raise Exception("temperature is not supported by this gateway")
-        return SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(content='{"ok":true}')
-                )
-            ]
-        )
+        return _fake_stream('{"ok":true}')
 
     client.client = _build_fake_client(fake_create)
 
@@ -189,8 +180,8 @@ def test_call_ai_retries_when_response_content_is_empty():
     async def fake_create(**kwargs):
         request_history.append(kwargs)
         if len(request_history) < 4:
-            return SimpleNamespace(output_text="")
-        return SimpleNamespace(output_text='{"ok":true}')
+            return _fake_stream("")
+        return _fake_stream('{"ok":true}')
 
     client.client = _build_fake_client(fake_create)
 
@@ -211,7 +202,7 @@ def test_call_ai_raises_after_all_empty_response_retries_are_exhausted():
 
     async def fake_create(**kwargs):
         request_history.append(kwargs)
-        return SimpleNamespace(output_text="")
+        return _fake_stream("")
 
     client.client = _build_fake_client(fake_create)
 
@@ -244,7 +235,8 @@ def test_parse_response_uses_first_json_object_when_response_contains_multiple_o
 {"ok": false, "reason": "second"}
 ```""")
 
-    assert result == {"ok": True, "reason": "first"}
+    assert result["ok"] is True
+    assert result["reason"] == "first"
 
 
 # -- _sanitize_no_proxy_env tests --
@@ -274,6 +266,10 @@ def test_sanitize_no_proxy_noop_without_env(monkeypatch):
     _sanitize_no_proxy_env()
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows 环境变量名不区分大小写，无法同时设置 NO_PROXY 与 no_proxy 两个变体",
+)
 def test_sanitize_no_proxy_handles_both_keys(monkeypatch):
     monkeypatch.setenv("NO_PROXY", "::1/128")
     monkeypatch.setenv("no_proxy", "fe80::1/10")

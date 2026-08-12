@@ -21,6 +21,20 @@ from src.services.task_service import TaskService
 from src.services.task_generation_service import TaskGenerationService
 
 
+@pytest.fixture(autouse=True)
+def restore_environ():
+    """隔离测试对进程环境变量的修改。
+
+    生产代码在保存设置后会调用 load_dotenv(override=True) 让配置立即生效，
+    这会把测试用 .env 的内容写进 os.environ 并泄漏到后续测试
+    （例如 ACCOUNT_STATE_DIR 污染 account_state_service 的默认路径断言）。
+    """
+    snapshot = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(snapshot)
+
+
 @pytest.fixture()
 def fixtures_dir() -> Path:
     return Path(__file__).parent / "fixtures"

@@ -375,52 +375,46 @@ def test_notification_settings_fall_back_to_runtime_environment_when_env_file_mi
     assert sorted(payload["CONFIGURED_CHANNELS"]) == ["bark", "ntfy", "telegram"]
 
 
-def test_ai_test_endpoint_falls_back_to_responses_when_chat_completions_api_404(
-    tmp_path, monkeypatch
-):
-    _clear_settings_env(monkeypatch)
-    env_file = tmp_path / ".env"
-    env_file.write_text("", encoding="utf-8")
-    monkeypatch.setattr(env_manager, "env_file", env_file)
-    client = _build_settings_client()
-    request_history = []
+class _FakeHTTPResponse:
+    """模拟 httpx.Response。"""
 
-    class _FakeOpenAI:
-        def __init__(self, **_kwargs):
-            self.responses = type(
-                "_Responses",
-                (),
-                {"create": self._responses_create},
-            )()
-            self.chat = type(
-                "_Chat",
-                (),
-                {
-                    "completions": type(
-                        "_Completions",
-                        (),
-                        {"create": self._chat_create},
-                    )()
-                },
-            )()
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
 
-        def _responses_create(self, **kwargs):
-            request_history.append(("responses", kwargs))
-            return type(
-                "_Response",
-                (),
-                {"output_text": "OK"},
-            )()
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"Error code: {self.status_code}")
 
-        def _chat_create(self, **kwargs):
-            request_history.append(("chat", kwargs))
-            raise Exception("Error code: 404 - page not found")
+    def json(self):
+        return self._payload
 
-    import openai
 
-    monkeypatch.setattr(openai, "OpenAI", _FakeOpenAI)
+def _patch_httpx_client(monkeypatch, request_history, response):
+    """把 /ai/test 端点使用的 httpx.AsyncClient 换成可断言的假实现。"""
+    import httpx
 
-    response = client.post(
+    class _FakeAsyncClient:
+        def __init__(self, **kwargs):
+            request_history.append(("init", kwargs))
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            request_history.append(("post", {"url": url, "json": json, "headers": headers}))
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+
+
+def _post_ai_test(client):
+    return client.post(
         "/api/settings/ai/test",
         json={
             "OPENAI_API_KEY": "demo",
@@ -429,11 +423,62 @@ def test_ai_test_endpoint_falls_back_to_responses_when_chat_completions_api_404(
         },
     )
 
+
+def _build_ai_test_client(tmp_path, monkeypatch):
+    _clear_settings_env(monkeypatch)
+    env_file = tmp_path / ".env"
+    env_file.write_text("", encoding="utf-8")
+    monkeypatch.setattr(env_manager, "env_file", env_file)
+    return _build_settings_client()
+
+
+def test_ai_test_endpoint_returns_content_from_chat_completions(tmp_path, monkeypatch):
+    client = _build_ai_test_client(tmp_path, monkeypatch)
+    request_history = []
+    _patch_httpx_client(
+        monkeypatch,
+        request_history,
+        _FakeHTTPResponse({"choices": [{"message": {"content": " OK "}}]}),
+    )
+
+    response = _post_ai_test(client)
+
     assert response.status_code == 200
     payload = response.json()
     assert payload["success"] is True
     assert payload["response"] == "OK"
-    assert request_history[0][0] == "chat"
-    assert request_history[0][1]["messages"][0]["content"] == settings.AI_TEST_PROMPT
-    assert request_history[1][0] == "responses"
-    assert request_history[1][1]["input"][0]["content"][0]["text"] == settings.AI_TEST_PROMPT
+
+    post_call = next(item for item in request_history if item[0] == "post")[1]
+    assert post_call["url"].endswith("/chat/completions")
+    assert post_call["json"]["model"] == "demo-model"
+    assert post_call["json"]["messages"][0]["content"] == settings.AI_TEST_PROMPT
+    assert post_call["headers"]["Authorization"] == "Bearer demo"
+
+
+def test_ai_test_endpoint_reports_failure_when_upstream_returns_error(
+    tmp_path, monkeypatch
+):
+    client = _build_ai_test_client(tmp_path, monkeypatch)
+    _patch_httpx_client(
+        monkeypatch, [], _FakeHTTPResponse({}, status_code=404)
+    )
+
+    response = _post_ai_test(client)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is False
+    assert "404" in payload["message"]
+
+
+def test_ai_test_endpoint_reports_failure_when_response_has_no_choices(
+    tmp_path, monkeypatch
+):
+    client = _build_ai_test_client(tmp_path, monkeypatch)
+    _patch_httpx_client(monkeypatch, [], _FakeHTTPResponse({"choices": []}))
+
+    response = _post_ai_test(client)
+
+    payload = response.json()
+    assert payload["success"] is False
+    assert "空响应" in payload["message"]

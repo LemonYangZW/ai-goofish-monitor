@@ -51,4 +51,8 @@ def test_save_to_jsonl(tmp_path, monkeypatch):
             sort_order="asc",
         )
     )
-    assert records == [record]
+    assert len(records) == 1
+    stored = records[0]
+    # 存储层会附加商品状态标记，新入库记录为 active
+    assert stored.pop("_status") == "active"
+    assert stored == record

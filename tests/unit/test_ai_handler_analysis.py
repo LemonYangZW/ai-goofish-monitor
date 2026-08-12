@@ -5,6 +5,13 @@ import pytest
 
 import src.ai_handler as ai_handler
 import src.config as app_config
+from tests.ai_stream_stubs import fake_stream as _fake_stream
+
+
+VALID_RESULT_JSON = (
+    '{"prompt_version":"v1","is_recommended":true,'
+    '"reason":"ok","risk_tags":[],"criteria_analysis":{"seller_type":"个人"}}'
+)
 
 
 def _build_fake_client(responses_create_impl, chat_create_impl=None):
@@ -23,7 +30,7 @@ def test_get_ai_analysis_stops_after_internal_retries_when_content_is_none(
 
     async def fake_create(**_kwargs):
         call_count["value"] += 1
-        return SimpleNamespace(output_text="")
+        return _fake_stream("")
 
     monkeypatch.setattr(ai_handler, "client", _build_fake_client(fake_create))
     monkeypatch.setattr(ai_handler, "MODEL_NAME", "fake-model")
@@ -48,12 +55,7 @@ def test_get_ai_analysis_returns_parsed_json(monkeypatch, tmp_path):
 
     async def fake_create(**_kwargs):
         call_count["value"] += 1
-        return SimpleNamespace(
-            output_text=(
-                '{"prompt_version":"v1","is_recommended":true,'
-                '"reason":"ok","risk_tags":[],"criteria_analysis":{"seller_type":"个人"}}'
-            )
-        )
+        return _fake_stream(VALID_RESULT_JSON)
 
     monkeypatch.setattr(ai_handler, "client", _build_fake_client(fake_create))
     monkeypatch.setattr(ai_handler, "MODEL_NAME", "fake-model")
@@ -87,18 +89,7 @@ def test_get_ai_analysis_retries_without_structured_output_when_model_rejects_it
                 "the request are not valid: `json_object` is not supported by "
                 "this model.', 'param': 'response_format.type'}}"
             )
-        return SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(
-                        content=(
-                            '{"prompt_version":"v1","is_recommended":true,'
-                            '"reason":"ok","risk_tags":[],"criteria_analysis":{"seller_type":"个人"}}'
-                        )
-                    )
-                )
-            ]
-        )
+        return _fake_stream(VALID_RESULT_JSON)
 
     monkeypatch.setattr(ai_handler, "client", _build_fake_client(fake_create))
     monkeypatch.setattr(ai_handler, "MODEL_NAME", "fake-model")
@@ -139,12 +130,7 @@ def test_get_ai_analysis_falls_back_to_responses_when_chat_completions_api_is_mi
                 "the request are not valid: `json_object` is not supported by "
                 "this model.', 'param': 'text.format.type'}}"
             )
-        return SimpleNamespace(
-            output_text=(
-                '{"prompt_version":"v1","is_recommended":true,'
-                '"reason":"ok","risk_tags":[],"criteria_analysis":{"seller_type":"个人"}}'
-            )
-        )
+        return _fake_stream(VALID_RESULT_JSON)
 
     monkeypatch.setattr(
         ai_handler,
@@ -182,18 +168,7 @@ def test_get_ai_analysis_retries_without_temperature_when_gateway_rejects_it(
         request_history.append(kwargs)
         if len(request_history) == 1:
             raise Exception("temperature is unsupported for this model")
-        return SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(
-                        content=(
-                            '{"prompt_version":"v1","is_recommended":true,'
-                            '"reason":"ok","risk_tags":[],"criteria_analysis":{"seller_type":"个人"}}'
-                        )
-                    )
-                )
-            ]
-        )
+        return _fake_stream(VALID_RESULT_JSON)
 
     monkeypatch.setattr(ai_handler, "client", _build_fake_client(fake_create))
     monkeypatch.setattr(ai_handler, "MODEL_NAME", "fake-model")
@@ -219,12 +194,10 @@ def test_get_ai_analysis_uses_first_json_object_when_model_returns_multiple_obje
     monkeypatch.chdir(tmp_path)
 
     async def fake_create(**_kwargs):
-        return SimpleNamespace(
-            output_text="""```json
+        return _fake_stream("""```json
 {"prompt_version":"v1","is_recommended":true,"reason":"first","risk_tags":[],"criteria_analysis":{"seller_type":"个人"}}
 {"prompt_version":"v1","is_recommended":false,"reason":"second","risk_tags":[],"criteria_analysis":{"seller_type":"商家"}}
-```"""
-        )
+```""")
 
     monkeypatch.setattr(ai_handler, "client", _build_fake_client(fake_create))
     monkeypatch.setattr(ai_handler, "MODEL_NAME", "fake-model")

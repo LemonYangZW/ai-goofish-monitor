@@ -56,7 +56,9 @@ def test_start_stop_task_updates_status(api_client, api_context, sample_task_pay
     assert process_service.stopped == [0]
 
 
-def test_generate_keyword_mode_task_without_ai_criteria(api_client):
+def test_generate_keyword_mode_task_without_ai_criteria(api_client, monkeypatch, tmp_path):
+    # 生成端点会往相对路径 prompts/ 写入分析标准，切换 cwd 避免污染仓库内的真实提示词
+    monkeypatch.chdir(tmp_path)
     payload = {
         "task_name": "A7M4 关键词筛选",
         "keyword": "sony a7m4",
@@ -75,7 +77,11 @@ def test_generate_keyword_mode_task_without_ai_criteria(api_client):
     assert created["keyword_rules"] == ["a7m4", "验货宝"]
 
 
-def test_generate_ai_task_returns_job_and_completes_async(api_client, api_context, monkeypatch):
+def test_generate_ai_task_returns_job_and_completes_async(
+    api_client, api_context, monkeypatch, tmp_path
+):
+    # 生成端点会往相对路径 prompts/ 写入分析标准，切换 cwd 避免覆盖仓库内的真实提示词
+    monkeypatch.chdir(tmp_path)
     payload = {
         "task_name": "Apple Watch S10",
         "keyword": "apple watch s10",

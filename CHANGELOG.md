@@ -54,9 +54,16 @@
 - **修复测试污染**：`load_dotenv(override=True)` 会把测试用 `.env` 写入 `os.environ` 并泄漏到后续用例，在 `conftest.py` 增加 autouse fixture 快照/恢复环境变量；任务生成端点会写入真实 `prompts/` 目录，改为切换工作目录隔离。
 - 新增用例覆盖请求头过滤、AI 响应归一化与 AI 测试端点的三条路径。
 
-### 待处理
+### 同步上游
 
-- 本分支落后上游 `master` 9 个提交，其中包含路径遍历安全修复（`6c2dc95`）。当前 `/api/prompts/{filename}` 端点仍使用 `"/"` 与 `".."` 黑名单校验，**在 Windows 上无法拦截 `C:\...` 形式的绝对路径**，需尽快同步。
+已合并上游归档前的最后 9 个提交，主要包括：
+
+- **路径遍历安全修复**（`6c2dc95`）—— `/api/prompts/{filename}` 端点原先使用 `"/"` 与 `".."` 黑名单校验，无法拦截 `C:\...` 形式的 Windows 绝对路径（`os.path.join` 遇到绝对路径会丢弃前缀）。现改为 `Path.resolve()` 包含性检查。该端点同时提供 GET 与 PUT，此前意味着任意文件读写
+- 结果黑名单规则与正则别名支持（`65fea72`、`5ccb33b`）
+- 区域筛选强制生效与多区域输入（`57d470d`）
+- 智谱等 OpenAI 兼容网关的 `reasoning_content` 回退（`7c9d249`、`d17fa54`）
+
+合并冲突仅出现在 `tests/unit/test_ai_response_parser.py`，双方各自在文件末尾追加测试、逻辑不重叠，已保留两侧。同步后全量测试 **132 passed**。
 
 ---
 

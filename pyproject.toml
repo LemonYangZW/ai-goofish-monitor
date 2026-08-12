@@ -1,3 +1,11 @@
+[project]
+name = "ai-goofish-monitor"
+version = "2.5.0"
+description = "基于 Playwright 和 AI 的闲鱼多任务实时监控与智能分析系统，配备 Web 管理界面"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+readme = "README.md"
+
 [tool.pytest.ini_options]
 addopts = "-v --tb=short"
 testpaths = ["tests"]

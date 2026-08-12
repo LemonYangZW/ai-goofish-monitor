@@ -1,5 +1,7 @@
 .idea
 *.iml
+.claude/
+.coverage
 xianyu_state.json
 .env
 .aider*

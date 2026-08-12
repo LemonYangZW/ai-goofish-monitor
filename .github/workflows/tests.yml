@@ -1,0 +1,47 @@
+name: Tests
+
+on:
+  push:
+    branches: ["master"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 对齐 Dockerfile 运行时，3.13 提前暴露新版本兼容问题
+        python-version: ["3.11", "3.13"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install system dependencies
+        # pyzbar 在 import 时即加载 libzbar，缺失会直接导致收集用例失败
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libzbar0
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        # live / live_slow 需要真实凭据与外部服务，CI 中不执行
+        run: pytest -m "not live and not live_slow" --tb=short
+
+      - name: Report coverage
+        if: matrix.python-version == '3.11'
+        run: |
+          coverage run -m pytest -m "not live and not live_slow" -q
+          coverage report

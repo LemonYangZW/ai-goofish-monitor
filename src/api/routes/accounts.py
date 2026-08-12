@@ -8,7 +8,13 @@ import aiofiles
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List
-from src.infrastructure.config.env_manager import env_manager
+from src.services.account_state_service import (
+    account_state_dir,
+    account_state_path,
+    ensure_account_state_dir,
+    normalize_state_path,
+    to_filesystem_path,
+)
 
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
@@ -25,21 +31,12 @@ class AccountUpdate(BaseModel):
     content: str
 
 
-def _strip_quotes(value: str) -> str:
-    if not value:
-        return value
-    if value.startswith(("\"", "'")) and value.endswith(("\"", "'")):
-        return value[1:-1]
-    return value
-
-
 def _state_dir() -> str:
-    raw = env_manager.get_value("ACCOUNT_STATE_DIR", "state") or "state"
-    return _strip_quotes(raw.strip())
+    return account_state_dir()
 
 
 def _ensure_state_dir(path: str) -> None:
-    os.makedirs(path, exist_ok=True)
+    os.makedirs(to_filesystem_path(path), exist_ok=True)
 
 
 def _validate_name(name: str) -> str:
@@ -50,8 +47,11 @@ def _validate_name(name: str) -> str:
 
 
 def _account_path(name: str) -> str:
-    filename = f"{name}.json"
-    return os.path.join(_state_dir(), filename)
+    return account_state_path(name)
+
+
+def _account_fs_path(name: str) -> str:
+    return to_filesystem_path(_account_path(name))
 
 
 def _validate_json(content: str) -> None:
@@ -64,15 +64,16 @@ def _validate_json(content: str) -> None:
 @router.get("", response_model=List[dict])
 async def list_accounts():
     state_dir = _state_dir()
-    if not os.path.isdir(state_dir):
+    fs_state_dir = to_filesystem_path(state_dir)
+    if not os.path.isdir(fs_state_dir):
         return []
-    files = [f for f in os.listdir(state_dir) if f.endswith(".json")]
+    files = [f for f in os.listdir(fs_state_dir) if f.endswith(".json")]
     accounts = []
     for filename in sorted(files):
         name = filename[:-5]
         accounts.append({
             "name": name,
-            "path": os.path.join(state_dir, filename),
+            "path": normalize_state_path(f"{state_dir}/{filename}"),
         })
     return accounts
 
@@ -81,9 +82,10 @@ async def list_accounts():
 async def get_account(name: str):
     account_name = _validate_name(name)
     path = _account_path(account_name)
-    if not os.path.exists(path):
+    fs_path = to_filesystem_path(path)
+    if not os.path.exists(fs_path):
         raise HTTPException(status_code=404, detail="账号不存在")
-    async with aiofiles.open(path, "r", encoding="utf-8") as f:
+    async with aiofiles.open(fs_path, "r", encoding="utf-8") as f:
         content = await f.read()
     return {"name": account_name, "path": path, "content": content}
 
@@ -95,9 +97,10 @@ async def create_account(data: AccountCreate):
     state_dir = _state_dir()
     _ensure_state_dir(state_dir)
     path = _account_path(account_name)
-    if os.path.exists(path):
+    fs_path = _account_fs_path(account_name)
+    if os.path.exists(fs_path):
         raise HTTPException(status_code=409, detail="账号已存在")
-    async with aiofiles.open(path, "w", encoding="utf-8") as f:
+    async with aiofiles.open(fs_path, "w", encoding="utf-8") as f:
         await f.write(data.content)
     return {"message": "账号已添加", "name": account_name, "path": path}
 
@@ -106,12 +109,12 @@ async def create_account(data: AccountCreate):
 async def update_account(name: str, data: AccountUpdate):
     account_name = _validate_name(name)
     _validate_json(data.content)
-    state_dir = _state_dir()
-    _ensure_state_dir(state_dir)
+    ensure_account_state_dir()
     path = _account_path(account_name)
-    if not os.path.exists(path):
+    fs_path = _account_fs_path(account_name)
+    if not os.path.exists(fs_path):
         raise HTTPException(status_code=404, detail="账号不存在")
-    async with aiofiles.open(path, "w", encoding="utf-8") as f:
+    async with aiofiles.open(fs_path, "w", encoding="utf-8") as f:
         await f.write(data.content)
     return {"message": "账号已更新", "name": account_name, "path": path}
 
@@ -120,7 +123,8 @@ async def update_account(name: str, data: AccountUpdate):
 async def delete_account(name: str):
     account_name = _validate_name(name)
     path = _account_path(account_name)
-    if not os.path.exists(path):
+    fs_path = to_filesystem_path(path)
+    if not os.path.exists(fs_path):
         raise HTTPException(status_code=404, detail="账号不存在")
-    os.remove(path)
+    os.remove(fs_path)
     return {"message": "账号已删除"}

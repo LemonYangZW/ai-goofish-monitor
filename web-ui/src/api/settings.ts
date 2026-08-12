@@ -82,6 +82,10 @@ export interface SystemStatus {
   login_state_file: {
     exists: boolean
     path: string
+    default_path?: string
+    legacy_path?: string
+    legacy_exists?: boolean
+    account_files?: string[]
   }
   env_file: {
     exists: boolean

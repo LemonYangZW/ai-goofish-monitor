@@ -12,9 +12,9 @@ from datetime import datetime
 from typing import Awaitable, Callable, Dict, TextIO
 
 from src.ai_handler import send_ntfy_notification
-from src.config import STATE_FILE
 from src.failure_guard import FailureGuard
 from src.infrastructure.persistence.sqlite_task_repository import find_task_by_name_sync
+from src.services.account_state_service import resolve_preferred_task_state_file
 from src.utils import build_task_log_path
 
 STOP_TIMEOUT_SECONDS = 20
@@ -55,12 +55,12 @@ class ProcessService:
         """Best-effort cookie/state path for a task."""
         try:
             task = find_task_by_name_sync(task_name)
-            if task and isinstance(task.account_state_file, str) and task.account_state_file.strip():
-                return task.account_state_file.strip()
+            if task:
+                return resolve_preferred_task_state_file(task.model_dump())
         except Exception:
             pass
 
-        return STATE_FILE if os.path.exists(STATE_FILE) else None
+        return resolve_preferred_task_state_file({})
 
     def is_running(self, task_id: int) -> bool:
         """检查任务是否正在运行"""

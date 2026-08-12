@@ -10,7 +10,7 @@ ACCOUNT_STRATEGIES = {"auto", "fixed", "rotate"}
 def clean_account_state_file(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
-    text = str(value).strip()
+    text = str(value).strip().replace("\\", "/")
     if not text or text in {"null", "undefined"}:
         return None
     return text
@@ -58,6 +58,6 @@ def resolve_account_runtime_plan(
     return {
         "strategy": normalized_strategy,
         "forced_account": None,
-        "use_account_pool": (not has_root_state_file) and has_account_pool,
-        "prefer_root_state": has_root_state_file,
+        "use_account_pool": has_account_pool,
+        "prefer_root_state": (not has_account_pool) and has_root_state_file,
     }

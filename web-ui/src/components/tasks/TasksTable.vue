@@ -62,7 +62,7 @@ const resolveAccountStrategyLabel = (task: Task) => {
 
 const resolveAccountName = (task: Task) => {
   if (!task.account_state_file) return t('tasks.table.systemSelected')
-  const segments = task.account_state_file.split('/')
+  const segments = task.account_state_file.split(/[\\/]/)
   const filename = segments[segments.length - 1] || task.account_state_file
   return filename.replace('.json', '')
 }

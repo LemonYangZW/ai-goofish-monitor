@@ -4,6 +4,8 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from src.services.account_state_service import normalize_state_path, to_filesystem_path
+
 
 @dataclass
 class RotationItem:
@@ -54,10 +56,12 @@ def parse_proxy_pool(value: Optional[str]) -> List[str]:
 def load_state_files(state_dir: str) -> List[str]:
     if not state_dir:
         return []
-    if not os.path.isdir(state_dir):
+    normalized_dir = normalize_state_path(state_dir)
+    fs_state_dir = to_filesystem_path(normalized_dir)
+    if not os.path.isdir(fs_state_dir):
         return []
     files = []
-    for name in os.listdir(state_dir):
+    for name in os.listdir(fs_state_dir):
         if name.endswith(".json"):
-            files.append(os.path.join(state_dir, name))
+            files.append(normalize_state_path(f"{normalized_dir}/{name}"))
     return sorted(files)

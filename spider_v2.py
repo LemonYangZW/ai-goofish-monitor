@@ -10,6 +10,7 @@ import re
 from src.config import STATE_FILE
 from src.infrastructure.persistence.sqlite_task_repository import SqliteTaskRepository
 from src.scraper import scrape_xianyu
+from src.services.account_state_service import list_account_state_files
 
 
 async def main():
@@ -44,7 +45,7 @@ async def main():
     else:
         repository = SqliteTaskRepository()
         tasks = await repository.find_all()
-        tasks_config = [task.dict() for task in tasks]
+        tasks_config = [task.model_dump() for task in tasks]
 
     def normalize_keywords(value):
         if value is None:
@@ -84,12 +85,7 @@ async def main():
         return False
 
     def has_any_state_file() -> bool:
-        state_dir = os.getenv("ACCOUNT_STATE_DIR", "state").strip().strip('"').strip("'")
-        if os.path.isdir(state_dir):
-            for name in os.listdir(state_dir):
-                if name.endswith(".json"):
-                    return True
-        return False
+        return bool(list_account_state_files())
 
     if not os.path.exists(STATE_FILE) and not has_bound_account(tasks_config) and not has_any_state_file():
         sys.exit(

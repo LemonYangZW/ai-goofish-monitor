@@ -15,6 +15,13 @@ from src.infrastructure.config.settings import (
     reload_settings,
     scraper_settings,
 )
+from src.services.account_state_service import (
+    default_account_state_path,
+    legacy_state_file,
+    list_account_state_files,
+    resolve_preferred_task_state_file,
+    to_filesystem_path,
+)
 from src.services.notification_config_service import (
     NotificationSettingsValidationError,
     build_configured_channels,
@@ -207,8 +214,10 @@ async def update_rotation_settings(settings: RotationSettingsModel):
 async def get_system_status(
     process_service: ProcessService = Depends(get_process_service),
 ):
-    state_file = "xianyu_state.json"
-    login_state_exists = os.path.exists(state_file)
+    account_state_files = list_account_state_files()
+    preferred_state_file = resolve_preferred_task_state_file({})
+    default_state_file = default_account_state_path()
+    legacy_file = legacy_state_file()
     env_file_exists = os.path.exists(env_manager.env_file)
     openai_api_key = env_manager.get_value("OPENAI_API_KEY", "")
     openai_base_url = env_manager.get_value("OPENAI_BASE_URL", "")
@@ -229,8 +238,12 @@ async def get_system_status(
         "scraper_running": len(running_task_ids) > 0,
         "running_task_ids": running_task_ids,
         "login_state_file": {
-            "exists": login_state_exists,
-            "path": state_file,
+            "exists": bool(preferred_state_file),
+            "path": preferred_state_file or default_state_file,
+            "default_path": default_state_file,
+            "legacy_path": legacy_file,
+            "legacy_exists": os.path.exists(to_filesystem_path(legacy_file)),
+            "account_files": account_state_files,
         },
         "env_file": {
             "exists": env_file_exists,

@@ -11,11 +11,18 @@ from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
 
 import requests
 
-# 设置标准输出编码为UTF-8，解决Windows控制台编码问题
+# 设置标准输出编码为UTF-8，解决Windows控制台编码问题。
+# 用 reconfigure 而非 detach：detach 会夺走底层 buffer 使原流对象失效，
+# 导致 pytest 等接管了 sys.stdout 的调用方崩溃（underlying buffer has been detached）。
 if sys.platform.startswith('win'):
-    import codecs
-    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.detach())
-    sys.stderr = codecs.getwriter('utf-8')(sys.stderr.detach())
+    for _stream in (sys.stdout, sys.stderr):
+        _reconfigure = getattr(_stream, "reconfigure", None)
+        if _reconfigure is not None:
+            try:
+                _reconfigure(encoding="utf-8")
+            except (ValueError, OSError):
+                # 流已被替换为不支持重配置的对象（如测试中的捕获流），保持原样即可
+                pass
 
 from src.config import (
     AI_DEBUG_MODE,

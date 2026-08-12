@@ -3,8 +3,8 @@ import json
 import os
 import random
 from datetime import datetime
-from typing import Optional
-from urllib.parse import urlencode
+from typing import Any, Optional
+from urllib.parse import urlencode, urlparse
 
 from playwright.async_api import (
     Response,
@@ -25,7 +25,6 @@ from src.config import (
     RUN_HEADLESS,
     RUNNING_IN_DOCKER,
     SKIP_AI_ANALYSIS,
-    STATE_FILE,
 )
 from src.parsers import (
     _parse_search_results_json,
@@ -45,6 +44,12 @@ from src.utils import (
 from src.rotation import RotationPool, load_state_files, parse_proxy_pool, RotationItem
 from src.failure_guard import FailureGuard
 from src.services.account_strategy_service import resolve_account_runtime_plan
+from src.services.account_state_service import (
+    account_state_file_exists,
+    legacy_state_file,
+    resolve_preferred_task_state_file,
+    to_filesystem_path,
+)
 from src.infrastructure.persistence.storage_names import build_result_filename
 from src.services.item_analysis_dispatcher import (
     ItemAnalysisDispatcher,
@@ -327,15 +332,84 @@ def _build_context_overrides(snapshot: dict) -> dict:
 
 
 def _build_extra_headers(raw_headers: Optional[dict]) -> dict:
+    """从浏览器快照中提取可安全覆盖的请求头。
+
+    快照里的 headers 采集自某个 XHR 请求，不能无差别套用到所有请求上：
+    - Sec-Fetch-* / Accept-Encoding 属浏览器保留头，由 Chromium 按请求类型自行计算，
+      强行覆盖会触发 net::ERR_INVALID_ARGUMENT，导致 JS 资源加载失败、页面无法初始化；
+    - Accept / Referer / Origin 的取值只对采集时的那个 XHR 成立，
+      用在文档导航和脚本加载上语义不符。
+    真正需要保留的是 Sec-CH-UA 系列 Client Hints 与 Accept-Language 等指纹相关头。
+    """
     if not raw_headers:
         return {}
-    excluded = {"cookie", "content-length"}
+    excluded = {
+        "cookie",
+        "content-length",
+        "content-type",
+        "user-agent",
+        "accept",
+        "accept-encoding",
+        "referer",
+        "origin",
+        "host",
+        "connection",
+    }
+    excluded_prefixes = ("sec-fetch-",)
     headers = {}
     for key, value in raw_headers.items():
-        if not key or key.lower() in excluded or value is None:
+        if not key or value is None:
+            continue
+        lowered = key.lower()
+        if lowered in excluded or lowered.startswith(excluded_prefixes):
             continue
         headers[key] = value
     return headers
+
+
+def _storage_entries(values: dict) -> list[dict]:
+    return [{"name": key, "value": str(value)} for key, value in values.items()]
+
+
+def _snapshot_origin(snapshot: dict) -> str:
+    page_url = snapshot.get("pageUrl") or (snapshot.get("page") or {}).get("pageUrl")
+    parsed = urlparse(page_url or "")
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _build_storage_state_from_snapshot(snapshot: dict) -> dict:
+    state = {"cookies": snapshot.get("cookies", [])}
+    storage = snapshot.get("storage") or {}
+    local_storage = storage.get("local") or {}
+    origin = _snapshot_origin(snapshot)
+    if origin and local_storage:
+        state["origins"] = [
+            {
+                "origin": origin,
+                "localStorage": _storage_entries(local_storage),
+            }
+        ]
+    return state
+
+
+def _build_session_storage_init_script(snapshot: dict) -> Optional[str]:
+    session_storage = ((snapshot.get("storage") or {}).get("session") or {})
+    origin = _snapshot_origin(snapshot)
+    if not origin or not session_storage:
+        return None
+    payload = json.dumps(session_storage, ensure_ascii=False)
+    expected_origin = json.dumps(origin, ensure_ascii=False)
+    return f"""
+        (() => {{
+            if (window.location.origin !== {expected_origin}) return;
+            const values = {payload};
+            for (const [key, value] of Object.entries(values)) {{
+                window.sessionStorage.setItem(key, String(value));
+            }}
+        }})();
+    """
 
 
 async def scrape_user_profile(context, user_id: str) -> dict:
@@ -481,12 +555,12 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
     runtime_plan = resolve_account_runtime_plan(
         strategy=task_config.get("account_strategy"),
         account_state_file=task_config.get("account_state_file"),
-        has_root_state_file=os.path.exists(STATE_FILE),
+        has_root_state_file=account_state_file_exists(legacy_state_file()),
         available_account_files=account_items,
     )
     forced_account = runtime_plan["forced_account"]
     if runtime_plan["prefer_root_state"]:
-        account_items = [STATE_FILE]
+        account_items = [legacy_state_file()]
         rotation_settings["account_enabled"] = False
     elif runtime_plan["use_account_pool"]:
         rotation_settings["account_enabled"] = True
@@ -510,8 +584,9 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
         if forced_account:
             return RotationItem(value=forced_account)
         if not rotation_settings["account_enabled"]:
-            if os.path.exists(STATE_FILE):
-                return RotationItem(value=STATE_FILE)
+            legacy_file = legacy_state_file()
+            if account_state_file_exists(legacy_file):
+                return RotationItem(value=legacy_file)
             return None
         if (
             rotation_settings["account_mode"] == "per_task"
@@ -538,13 +613,14 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
     async def _run_scrape_attempt(state_file: str, proxy_server: Optional[str]) -> int:
         processed_item_count = 0
         stop_scraping = False
+        fs_state_file = to_filesystem_path(state_file)
 
-        if not os.path.exists(state_file):
+        if not os.path.exists(fs_state_file):
             raise FileNotFoundError(f"登录状态文件不存在: {state_file}")
 
         snapshot_data = None
         try:
-            with open(state_file, "r", encoding="utf-8") as f:
+            with open(fs_state_file, "r", encoding="utf-8") as f:
                 snapshot_data = json.load(f)
         except Exception as e:
             print(f"警告：读取登录状态文件失败，将直接按路径使用: {e}")
@@ -569,7 +645,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
             browser = await p.chromium.launch(**launch_kwargs)
 
             context_kwargs = _default_context_options()
-            storage_state_arg = state_file
+            storage_state_arg = fs_state_file
             analysis_dispatcher: Optional[ItemAnalysisDispatcher] = None
 
             if isinstance(snapshot_data, dict):
@@ -579,7 +655,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                     for key in ("env", "headers", "page", "storage")
                 ):
                     print(f"检测到增强浏览器快照，应用环境参数: {state_file}")
-                    storage_state_arg = {"cookies": snapshot_data.get("cookies", [])}
+                    storage_state_arg = _build_storage_state_from_snapshot(snapshot_data)
                     context_kwargs.update(_build_context_overrides(snapshot_data))
                     extra_headers = _build_extra_headers(snapshot_data.get("headers"))
                     if extra_headers:
@@ -591,6 +667,10 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
             context = await browser.new_context(
                 storage_state=storage_state_arg, **context_kwargs
             )
+            if isinstance(snapshot_data, dict):
+                session_storage_script = _build_session_storage_init_script(snapshot_data)
+                if session_storage_script:
+                    await context.add_init_script(session_storage_script)
             seller_profile_cache = SellerProfileCache(
                 ttl_seconds=_get_seller_profile_cache_ttl(task_config)
             )
@@ -642,7 +722,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                     timeout=30000,
                 )
                 log_time("[反爬] 在首页停留，模拟浏览...")
-                await random_sleep(1, 2)
+                await random_sleep(2, 4)
 
                 # 模拟随机滚动（移动设备的触摸滚动）
                 await page.evaluate("window.scrollBy(0, Math.random() * 500 + 200)")
@@ -655,19 +735,116 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                 log_time(f"目标URL: {search_url}")
 
                 # 先监听搜索接口响应，再执行导航，避免错过首次请求
-                async with page.expect_response(
-                    is_search_results_response, timeout=30000
-                ) as initial_response_info:
-                    await page.goto(
-                        search_url, wait_until="domcontentloaded", timeout=60000
+                # 同时记录所有 mtop API 响应，用于诊断 API 路径变化
+                _captured_api_urls: list[str] = []
+                # 同时记录加载失败的资源：注入非法请求头等原因会让页面 JS 加载不全，
+                # 表现同样是"零 mtop 响应"，但根因与登录态无关。
+                _failed_requests: list[str] = []
+
+                def _debug_capture_response(resp: Any) -> None:
+                    url = getattr(resp, "url", "")
+                    if "mtop" in url:
+                        _captured_api_urls.append(url)
+
+                def _debug_capture_failure(req: Any) -> None:
+                    _failed_requests.append(
+                        f"{getattr(req, 'url', '')} ({getattr(req, 'failure', None)})"
                     )
+
+                initial_response = None
+                search_response_task = None
+                page.on("response", _debug_capture_response)
+                page.on("requestfailed", _debug_capture_failure)
+                try:
+                    search_response_task = asyncio.create_task(
+                        page.wait_for_event(
+                            "response",
+                            predicate=is_search_results_response,
+                            timeout=30000,
+                        )
+                    )
+                    try:
+                        await page.goto(
+                            search_url, wait_until="domcontentloaded", timeout=30000
+                        )
+                    except PlaywrightTimeoutError:
+                        print("[诊断] 搜索页导航 domcontentloaded 超时，继续检查当前页面状态。")
+
+                    if _is_login_url(page.url):
+                        raise LoginRequiredError(
+                            f"Login required: redirected to {page.url} (cookies/state likely expired)"
+                        )
+
+                    initial_response = await search_response_task
+                except PlaywrightTimeoutError:
+                    # 打印当前页面状态帮助诊断
+                    _page_url = ""
+                    _page_title = ""
+                    try:
+                        _page_url = page.url
+                        _page_title = await page.title()
+                        print(f"[诊断] 当前页面URL: {_page_url}")
+                        print(f"[诊断] 当前页面标题: {_page_title}")
+                    except Exception:
+                        pass
+                    if _captured_api_urls:
+                        print(
+                            f"[诊断] 搜索API超时，实际捕获到的mtop接口列表（共{len(_captured_api_urls)}个）："
+                        )
+                        for _url in _captured_api_urls[:10]:
+                            print(f"  - {_url}")
+                    else:
+                        print("[诊断] 搜索API超时，且未捕获到任何mtop接口响应。")
+                    if _failed_requests:
+                        print(
+                            f"[诊断] 页面有 {len(_failed_requests)} 个资源加载失败，前若干条："
+                        )
+                        for _item in _failed_requests[:10]:
+                            print(f"  - {_item}")
+                    # URL 正确但页面渲染的是首页内容且零 API 调用。
+                    # 该组合有多种成因，无法仅凭此断定是 Cookie 失效，故措辞保持中立。
+                    _homepage_titles = {"闲鱼 - 闲不住？上闲鱼！", "闲鱼", "Idle Fish"}
+                    if (
+                        "/search" in _page_url
+                        and not _is_login_url(_page_url)
+                        and _page_title in _homepage_titles
+                        and not _captured_api_urls
+                    ):
+                        _hint = (
+                            f"页面有 {len(_failed_requests)} 个资源加载失败，"
+                            "优先排查请求头/代理等导致前端脚本加载不全的问题；"
+                            if _failed_requests
+                            else "页面资源加载正常，登录态失效的可能性较大；"
+                        )
+                        raise LoginRequiredError(
+                            "搜索页未产生任何 mtop 请求且页面渲染为首页。"
+                            f"{_hint}"
+                            "其余可能原因：登录态失效、风控拦截、网络异常。"
+                            "可先通过 Web UI 更新登录状态（state.json）重试。"
+                        ) from None
+                    raise
+                finally:
+                    if (
+                        initial_response is None
+                        and search_response_task
+                        and not search_response_task.done()
+                    ):
+                        search_response_task.cancel()
+                        try:
+                            await search_response_task
+                        except asyncio.CancelledError:
+                            pass
+                    page.remove_listener("response", _debug_capture_response)
+                    page.remove_listener("requestfailed", _debug_capture_failure)
+
                 if _is_login_url(page.url):
                     raise LoginRequiredError(
                         f"Login required: redirected to {page.url} (cookies/state likely expired)"
                     )
 
                 # 捕获初始搜索的API数据
-                initial_response = await initial_response_info.value
+                if initial_response is None:
+                    raise PlaywrightTimeoutError("initial-search-response-missing")
 
                 # 等待页面加载出关键筛选元素，以确认已成功进入搜索结果页
                 try:
@@ -1186,14 +1363,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
 
     # If this task is already in a paused state, skip immediately.
     task_name_for_guard = task_config.get("task_name", "未命名任务")
-    pause_cookie_path = None
-    if (
-        isinstance(task_config.get("account_state_file"), str)
-        and task_config.get("account_state_file").strip()
-    ):
-        pause_cookie_path = task_config.get("account_state_file").strip()
-    elif os.path.exists(STATE_FILE):
-        pause_cookie_path = STATE_FILE
+    pause_cookie_path = resolve_preferred_task_state_file(task_config)
 
     decision = FAILURE_GUARD.should_skip_start(
         task_name_for_guard, cookie_path=pause_cookie_path
@@ -1253,7 +1423,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
             print(last_error)
             break
 
-        state_path = selected_account.value if selected_account else STATE_FILE
+        state_path = selected_account.value if selected_account else legacy_state_file()
         last_state_path = state_path
         proxy_server = selected_proxy.value if selected_proxy else None
         if rotation_settings["account_enabled"]:

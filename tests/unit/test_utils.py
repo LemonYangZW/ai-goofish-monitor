@@ -53,6 +53,8 @@ def test_save_to_jsonl(tmp_path, monkeypatch):
     )
     assert len(records) == 1
     stored = records[0]
-    # 存储层会附加商品状态标记，新入库记录为 active
-    assert stored.pop("_status") == "active"
-    assert stored == record
+    # 存储层会附加下划线前缀的元数据（商品状态、黑名单命中等），新入库记录应为可见的 active
+    assert stored["_status"] == "active"
+    assert stored["_effective_hidden"] is False
+    # 业务字段需与写入内容完全一致，元数据字段不参与比较，避免存储层扩展字段时误报
+    assert {k: v for k, v in stored.items() if not k.startswith("_")} == record
